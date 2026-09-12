@@ -267,6 +267,20 @@
     html { scroll-behavior: auto; }
     *, *::before, *::after { transition: none !important; }
   }
+  .meta-row { flex-wrap: wrap; }
+  .view-toggle, .pagination button {
+    min-height: 40px; padding: 8px 12px; border: 1px solid var(--border-strong);
+    border-radius: 8px; background: var(--surface); color: var(--text);
+    font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .view-toggle[aria-pressed="true"], .pagination button[aria-current="page"] {
+    background: var(--green); color: white; border-color: var(--green);
+  }
+  .pagination { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin: 16px 0; }
+  .pagination button:disabled { opacity: .45; cursor: default; }
+  .pagination button:focus-visible, .view-toggle:focus-visible { outline: 3px solid var(--green-border); outline-offset: 2px; }
+  .pagination[hidden] { display: none; }
+  .options:empty { display: none; }
 </style>
 </head>
 <body>
@@ -292,18 +306,27 @@
 
     <div class="meta-row">
       <span class="meta" id="meta" aria-live="polite"></span>
+      <button id="toggleOptions" class="view-toggle" type="button" aria-pressed="false">Ẩn lựa chọn sai</button>
     </div>
   </div>
 </header>
 
 <main class="wrap">
+  <nav id="paginationTop" class="pagination" aria-label="Chọn trang phía trên"></nav>
   <div id="results"></div>
+  <nav id="paginationBottom" class="pagination" aria-label="Chọn trang phía dưới"></nav>
 </main>
 
 <button id="backToTop" type="button" aria-label="Lên đầu trang" title="Lên đầu trang">↑</button>
 
 <!-- File dữ liệu đặt cùng thư mục với index.html -->
 <script src="qna_data.js"></script>
+<script>
+// Hỗ trợ cả tên file dữ liệu được tải xuống kèm hậu tố (1).
+if (typeof qaList === "undefined") {
+  document.write('<script src="qna_data(1).js"><\/script>');
+}
+</script>
 <script>
 'use strict';
 
@@ -319,6 +342,50 @@ const elMeta = document.getElementById('meta');
 const elBackToTop = document.getElementById('backToTop');
 
 let searchTimer = null;
+const PAGE_SIZE = 50;
+let currentPage = 1;
+let compactView = false;
+let filteredItems = data;
+let activeQuery = '';
+const elToggleOptions = document.getElementById('toggleOptions');
+const paginationBars = [document.getElementById('paginationTop'), document.getElementById('paginationBottom')];
+// Chuẩn hóa một lần; tìm kiếm vẫn chạy trên toàn bộ câu hỏi và lựa chọn.
+const searchIndex = data.map(item => ({ item, text: normalizeVN(getSearchableText(item)) }));
+
+function renderPagination(totalPages) {
+  paginationBars.forEach(bar => {
+    bar.replaceChildren();
+    bar.hidden = totalPages <= 1;
+    if (totalPages <= 1) return;
+    function addButton(label, page, disabled = false) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      button.disabled = disabled;
+      button.setAttribute('aria-label', /^\d+$/.test(label) ? `Trang ${page}` : label);
+      if (/^\d+$/.test(label) && page === currentPage) button.setAttribute('aria-current', 'page');
+      button.addEventListener('click', () => {
+        currentPage = page;
+        render(filteredItems, activeQuery);
+        window.scrollTo({ top: 0, behavior: 'auto' });
+        const currentButton = bar.querySelector('[aria-current="page"]');
+        if (currentButton && bar === paginationBars[0]) currentButton.focus({ preventScroll: true });
+        else paginationBars[0].querySelector('[aria-current="page"]')?.focus({ preventScroll: true });
+      });
+      bar.appendChild(button);
+    }
+    addButton('Trước', currentPage - 1, currentPage === 1);
+    for (let page = 1; page <= totalPages; page++) addButton(String(page), page);
+    addButton('Sau', currentPage + 1, currentPage === totalPages);
+  });
+}
+
+elToggleOptions.addEventListener('click', () => {
+  compactView = !compactView;
+  elToggleOptions.setAttribute('aria-pressed', String(compactView));
+  elToggleOptions.textContent = compactView ? 'Hiện đầy đủ lựa chọn' : 'Ẩn lựa chọn sai';
+  if (data.length) render(filteredItems, activeQuery);
+});
 
 function normalizeVN(value) {
   return String(value ?? '')
@@ -451,10 +518,17 @@ function showDataError() {
 function render(items, rawQuery = '') {
   elResults.replaceChildren();
 
+  filteredItems = items;
+  activeQuery = rawQuery;
+  const totalPages = Math.ceil(items.length / PAGE_SIZE);
+  currentPage = Math.max(1, Math.min(currentPage, totalPages || 1));
+  const start = (currentPage - 1) * PAGE_SIZE;
+  renderPagination(totalPages);
   const query = rawQuery.trim();
   elMeta.textContent = query
     ? `Tìm thấy ${items.length} / ${data.length} câu`
     : `Có ${data.length} câu hỏi`;
+  if (items.length) elMeta.textContent += ` · Trang ${currentPage}/${totalPages} · Hiển thị ${start + 1}–${Math.min(start + PAGE_SIZE, items.length)}`;
 
   if (items.length === 0) {
     const empty = document.createElement('div');
@@ -473,13 +547,13 @@ function render(items, rawQuery = '') {
 
   const frag = document.createDocumentFragment();
 
-  items.forEach((item, index) => {
+  items.slice(start, start + PAGE_SIZE).forEach((item, index) => {
     const card = document.createElement('article');
     card.className = 'card';
 
     const qid = document.createElement('div');
     qid.className = 'qid';
-    qid.textContent = `Câu ${item?.id ?? index + 1}`;
+    qid.textContent = `Câu ${item?.id ?? start + index + 1}`;
 
     const question = document.createElement('div');
     question.className = 'question';
@@ -489,7 +563,9 @@ function render(items, rawQuery = '') {
     options.className = 'options';
 
     Object.entries(item?.options || {}).forEach(([key, value]) => {
-      options.appendChild(createOption(key, value, item?.correct, rawQuery));
+      if (!compactView || isCorrectOption(item?.correct, key)) {
+        options.appendChild(createOption(key, value, item?.correct, rawQuery));
+      }
     });
 
     const answer = document.createElement('div');
@@ -506,6 +582,8 @@ function render(items, rawQuery = '') {
 }
 
 function runSearch() {
+  if (!data.length) { showDataError(); return; }
+  currentPage = 1;
   const rawQuery = elSearch.value;
   const query = normalizeVN(rawQuery);
 
@@ -516,7 +594,7 @@ function runSearch() {
     return;
   }
 
-  const filtered = data.filter(item => normalizeVN(getSearchableText(item)).includes(query));
+  const filtered = searchIndex.filter(entry => entry.text.includes(query)).map(entry => entry.item);
   render(filtered, rawQuery);
 }
 
